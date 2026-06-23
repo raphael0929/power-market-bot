@@ -1,0 +1,57 @@
+name: 01 · 매일 콘텐츠 초안 생성
+
+on:
+  schedule:
+    - cron: '0 21 * * *'   # 매일 오전 6시 KST (UTC+9)
+  workflow_dispatch:
+    inputs:
+      topic:
+        description: '직접 주제 입력 (비워두면 AI가 자동 선정)'
+        required: false
+        default: ''
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements_agent.txt
+
+      - name: Generate content draft
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -n "${{ github.event.inputs.topic }}" ]; then
+            python -c "
+import json, pathlib, sys
+sys.path.insert(0, '.')
+from agents.content_generator import generate_daily_content
+content = generate_daily_content(topic='${{ github.event.inputs.topic }}')
+p = pathlib.Path('drafts') / f\"{content['date']}.json\"
+p.parent.mkdir(exist_ok=True)
+p.write_text(json.dumps(content, ensure_ascii=False, indent=2), encoding='utf-8')
+print(f'블로그: {content[\"blog\"][\"title\"]}')
+print(f'YouTube: {content[\"youtube\"][\"title\"]}')
+"
+          else
+            python daily_agent.py generate
+          fi
+
+      - name: Commit draft to repository
+        run: |
+          git config user.name  "daily-content-bot"
+          git config user.email "bot@github-actions"
+          git add drafts/
+          git diff --cached --quiet || git commit -m "draft: $(date -u +%Y-%m-%d) 콘텐츠 초안 생성"
+          git push origin ${{ github.ref_name }}

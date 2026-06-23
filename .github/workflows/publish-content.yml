@@ -1,0 +1,73 @@
+name: 02 · 매일 콘텐츠 게시 (Blogger + YouTube)
+
+on:
+  schedule:
+    - cron: '0 23 * * *'   # 매일 오전 8시 KST (UTC+9)
+  workflow_dispatch:
+    inputs:
+      date:
+        description: '게시할 날짜 (YYYY-MM-DD, 비워두면 오늘)'
+        required: false
+        default: ''
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg fonts-nanum
+
+      - name: Install Python dependencies
+        run: pip install -r requirements_agent.txt
+
+      - name: Resolve target date
+        id: date
+        run: |
+          if [ -n "${{ github.event.inputs.date }}" ]; then
+            echo "value=${{ github.event.inputs.date }}" >> $GITHUB_OUTPUT
+          else
+            echo "value=$(date -u +%Y-%m-%d)" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Check approved content exists
+        id: check
+        run: |
+          FILE="approved/${{ steps.date.outputs.value }}.json"
+          if [ -f "$FILE" ]; then
+            echo "found=true"  >> $GITHUB_OUTPUT
+            echo "✅ 게시 파일 발견: $FILE"
+          else
+            echo "found=false" >> $GITHUB_OUTPUT
+            echo "⚠️ $FILE 없음 — 오늘은 게시를 건너뜁니다."
+            echo "   drafts/ 의 파일을 approved/ 로 이동하면 다음 실행 시 게시됩니다."
+          fi
+
+      - name: Publish to Blogger + YouTube
+        if: steps.check.outputs.found == 'true'
+        env:
+          BLOGGER_OAUTH2_TOKEN: ${{ secrets.BLOGGER_OAUTH2_TOKEN }}
+          BLOGGER_BLOG_ID:      ${{ secrets.BLOGGER_BLOG_ID }}
+          YOUTUBE_OAUTH2_TOKEN: ${{ secrets.YOUTUBE_OAUTH2_TOKEN }}
+        run: python daily_agent.py publish
+
+      - name: Commit published state
+        if: steps.check.outputs.found == 'true'
+        run: |
+          git config user.name  "daily-content-bot"
+          git config user.email "bot@github-actions"
+          git add approved/ published/
+          git diff --cached --quiet || git commit -m "publish: ${{ steps.date.outputs.value }} 게시 완료"
+          git push origin ${{ github.ref_name }}
